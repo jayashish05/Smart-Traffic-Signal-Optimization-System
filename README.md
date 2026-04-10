@@ -1,3 +1,4 @@
+<img width="798" height="792" alt="Screenshot 2026-04-10 at 7 48 20 PM" src="https://github.com/user-attachments/assets/3a2a411a-b8a3-456e-9fb9-9851edd6ab30" />
 <p align="center">
   <img src="https://img.shields.io/badge/Python-3.9%2B-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python"/>
   <img src="https://img.shields.io/badge/Pygame-2.x-00979D?style=for-the-badge&logo=python&logoColor=white" alt="Pygame"/>
@@ -10,7 +11,7 @@
 > **An intelligent traffic signal control system powered by Q-Learning Reinforcement Learning, with a real-time Pygame simulation that visually demonstrates how RL outperforms traditional fixed-timer signals.**
 
 <p align="center">
-  <img src="assets/demo_screenshot.png" alt="Simulation Screenshot" width="600"/>
+  <img width="795" height="799" alt="Screenshot 2026-04-10 at 7 48 54 PM" src="https://github.com/user-attachments/assets/2431bdcf-660e-4330-8c54-10d696462475" />
 </p>
 
 ---
