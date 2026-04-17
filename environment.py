@@ -9,7 +9,7 @@ from utils import (
     INTERSECTIONS, discretize_count,
 )
 
-YELLOW_DURATION = 45  # 1.5 s at 30 FPS
+YELLOW_DURATION = 55  # ~1.8 s at 30 FPS (enough for worst-case clearance)
 
 
 class TrafficEnvironment:
@@ -63,6 +63,48 @@ class TrafficEnvironment:
 
         self.previous_actions[int_idx] = action
 
+    # ── intersection clearance ───────────────────────────────────────
+
+    def _intersection_clear(self, int_idx: int) -> bool:
+        """True if no car from the OLD phase is still committed inside
+        the intersection.  Used to hold yellow until safe to switch."""
+        target = self.target_actions[int_idx]
+        # Directions that belonged to the OLD phase
+        if target == 0:          # switching TO NS green → old was EW
+            old_dirs = {EAST, WEST}
+        else:                    # switching TO EW green → old was NS
+            old_dirs = {NORTH, SOUTH}
+
+        for car in self.cars:
+            if car.direction not in old_dirs:
+                continue
+            if not car.inside_current:
+                continue
+            if car.next_int_idx < len(car.intersections):
+                if car.intersections[car.next_int_idx].idx == int_idx:
+                    return False          # old-phase car still crossing
+        return True
+
+    def _blocked_intersections(self) -> set:
+        """Return set of intersection indices where cross-traffic is still
+        committed.  Cars check this before committing on green."""
+        blocked = set()
+        for inter in self.intersections:
+            greens = self.signals[inter.idx].green_directions()
+            if not greens:                     # yellow phase → block
+                blocked.add(inter.idx)
+                continue
+            for car in self.cars:
+                if car.direction in greens:    # same phase, no conflict
+                    continue
+                if not car.inside_current:
+                    continue
+                if car.next_int_idx < len(car.intersections):
+                    if car.intersections[car.next_int_idx].idx == inter.idx:
+                        blocked.add(inter.idx)
+                        break
+        return blocked
+
     # ── frame update ─────────────────────────────────────────────────
 
     def tick_cars(self):
@@ -72,14 +114,22 @@ class TrafficEnvironment:
             if self.transition_timers[int_idx] > 0:
                 self.transition_timers[int_idx] -= 1
                 if self.transition_timers[int_idx] == 0:
-                    target = self.target_actions[int_idx]
-                    self.signals[int_idx].set_state(0 if target == 0 else 2)
+                    # Only grant green if intersection is clear of old-phase cars
+                    if self._intersection_clear(int_idx):
+                        target = self.target_actions[int_idx]
+                        self.signals[int_idx].set_state(0 if target == 0 else 2)
+                    else:
+                        # Hold yellow — keep timer at 1 so we recheck next frame
+                        self.transition_timers[int_idx] = 1
 
-        # Update cars with lane-aware following
+        # Compute which intersections still have cross-traffic inside
+        blocked = self._blocked_intersections()
+
+        # Update cars with lane-aware following + cross-traffic safety
         groups = self._cars_by_lane()
         for car in self.cars:
             lane_cars = groups.get(car.lane_key, [])
-            car.update(self.signals, lane_cars)
+            car.update(self.signals, lane_cars, blocked)
 
         self.total_wait_frames += sum(1 for c in self.cars if c.waiting)
 

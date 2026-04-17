@@ -53,13 +53,18 @@ class Car:
 
     # ── update ───────────────────────────────────────────────────────
 
-    def update(self, signals, cars_in_lane):
+    def update(self, signals, cars_in_lane, blocked_ints=None):
         """Advance one frame.
 
         Args:
             signals: dict mapping intersection idx → TrafficSignal.
             cars_in_lane: list of Car objects sharing this lane.
+            blocked_ints: set of intersection indices where cross-traffic
+                          is still inside — do NOT commit even on green.
         """
+        if blocked_ints is None:
+            blocked_ints = set()
+
         should_stop = False
 
         if self.next_int_idx < len(self.intersections):
@@ -78,8 +83,12 @@ class Car:
 
             if at_stop:
                 if self.direction in signal.green_directions():
-                    # Green → commit to entering
-                    self.inside_current = True
+                    if inter.idx in blocked_ints:
+                        # Green BUT cross-traffic still inside → wait
+                        should_stop = True
+                    else:
+                        # Green and clear → commit to entering
+                        self.inside_current = True
                 else:
                     # Red / Yellow → stop
                     should_stop = True
