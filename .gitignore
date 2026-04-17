@@ -26,3 +26,6 @@ Thumbs.db
 
 # Project outputs
 performance_comparison.png
+
+# Q-table persistence (keep locally, don't push trained models)
+q_table_*.pkl

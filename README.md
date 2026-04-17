@@ -7,11 +7,7 @@
 
 # 🚦 Smart Traffic Signal Optimization System
 
-> **An intelligent traffic signal control system powered by Q-Learning Reinforcement Learning, with a real-time Pygame simulation that visually demonstrates how RL outperforms traditional fixed-timer signals.**
-
-<p align="center">
-  <img width="795" height="799" alt="Screenshot 2026-04-10 at 7 48 54 PM" src="https://github.com/user-attachments/assets/2431bdcf-660e-4330-8c54-10d696462475" />
-</p>
+> **A dual-junction intelligent traffic signal system powered by Q-Learning Reinforcement Learning with persistent memory, featuring real-time Pygame simulation that demonstrates how RL agents outperform traditional fixed-timer signals.**
 
 ---
 
@@ -37,9 +33,11 @@
 
 Urban traffic congestion is a growing global challenge. Traditional fixed-timer traffic signals operate on static cycles regardless of actual traffic conditions, leading to unnecessary delays and increased emissions.
 
-This project implements a **Q-Learning-based Reinforcement Learning agent** that learns to dynamically control traffic signals at a 4-way intersection. The agent observes the number of waiting vehicles in each direction and learns an optimal signal-switching policy that minimizes overall wait times.
+This project implements a **multi-agent Q-Learning system** where **two independent RL agents** each control a traffic signal at a connected dual-junction intersection. The agents observe waiting vehicles in each direction and learn optimal signal-switching policies that minimize overall wait times.
 
-A **real-time Pygame simulation** provides visual feedback, and a **fixed-timer baseline** is included for direct performance comparison — making this project ideal for **academic presentations**, **research demonstrations**, and **portfolio showcases**.
+**Persistent memory** ensures that trained Q-tables are saved to disk — each subsequent run starts from the previously learned policy, enabling continuous improvement across sessions.
+
+A **real-time Pygame simulation** (1400×800) provides visual feedback, and a **fixed-timer baseline** is included for direct A/B performance comparison.
 
 ---
 
@@ -47,82 +45,105 @@ A **real-time Pygame simulation** provides visual feedback, and a **fixed-timer 
 
 | Feature | Description |
 |---------|-------------|
-| **🤖 Q-Learning Agent** | Tabular Q-learning with ε-greedy exploration, automatic epsilon decay, and continuous online training |
-| **⏱ Fixed-Timer Baseline** | Traditional signal controller for A/B comparison — toggle in real time |
-| **🟢🟡🔴 Realistic Signal Phases** | Full Green → Yellow → Red transition cycle with clearance intervals to prevent intersection collisions |
-| **🚗 Car-Following Model** | Vehicles maintain safe following distances — no rear-end collisions |
-| **📊 Live Dashboard** | Real-time display of mode, signal state, waiting cars, average wait, Q-table size, and epsilon |
-| **🏷 Per-Lane Counters** | Floating badges on each road approach showing total and waiting car counts |
-| **📈 Performance Plotting** | Matplotlib chart (saved as PNG) comparing RL vs Fixed-timer upon exit |
-| **🎮 Interactive Controls** | Toggle modes, reset simulation, and quit — all via keyboard |
-| **🎨 Premium Visuals** | Dark theme, dashed lane markings, crosswalks, car shadows, windshields, headlights, glowing signals |
+| **🤖 Dual RL Agents** | Independent Q-learning agent per junction with ε-greedy exploration and online training |
+| **💾 Persistent Memory** | Q-tables saved to disk (`.pkl`) — agents remember and improve across runs |
+| **🔗 Connected Junctions** | Two intersections linked by a shared horizontal road; E/W cars cross both junctions |
+| **🟢🟡🔴 Yellow Clearance** | Full Green → Yellow → Red transition cycle prevents intersection collisions |
+| **🚗 Lane-Aware Car-Following** | Cars grouped by lane key; maintains safe following distance within each lane |
+| **🚘 Multi-Intersection Traversal** | E/W cars sequentially check signals at each junction they encounter |
+| **📊 Live Dashboard** | Real-time mode, waiting count, avg wait, cars served, epsilon, Q-table size |
+| **🏷 Per-Junction Panels** | Signal state, car count, and Q-table info displayed below each intersection |
+| **📈 Performance Plotting** | Matplotlib chart comparing RL vs Fixed-timer generated on exit |
+| **⏱ Fixed-Timer Baseline** | Traditional controller for real-time A/B comparison (toggle with SPACE) |
+| **🎨 Premium Dark Theme** | Dashed lane markings, crosswalks, car shadows, windshields, glowing signals |
 
 ---
 
 ## 🏗 Architecture
 
 ```
-┌─────────────┐     ┌──────────────────┐     ┌─────────────────┐
-│   main.py   │────▶│  environment.py  │────▶│  traffic_signal  │
-│  (Pygame    │     │  (State/Reward/  │     │  (Phase mgmt,   │
-│   loop &    │     │   Spawning)      │     │   Yellow light)  │
-│   UI)       │     └──────────────────┘     └─────────────────┘
-└─────────────┘              │
-       │                     ▼
-       │            ┌──────────────────┐
-       │            │     car.py       │
-       │            │  (Movement,      │
-       │            │   Stop logic,    │
-       │            │   Rendering)     │
-       │            └──────────────────┘
+┌──────────────────────────────────────────────────────────────┐
+│                        main.py                               │
+│  Pygame loop · Road rendering · UI overlay · Episode mgmt    │
+└────────────┬──────────────────────────────────┬──────────────┘
+             │                                  │
+             ▼                                  ▼
+┌─────────────────────┐              ┌──────────────────────┐
+│   environment.py    │              │     agent.py (×2)    │
+│  Dual-junction env  │◄────────────▶│  Q-Learning + disk   │
+│  Car spawning/tick  │              │  save/load (pickle)  │
+│  Per-junction state │              └──────────────────────┘
+└──────┬──────────────┘
        │
        ▼
-┌─────────────┐     ┌──────────────────┐
-│  agent.py   │     │    utils.py      │
-│  (Q-table,  │     │  (Constants,     │
-│   ε-greedy, │     │   Colors,        │
-│   Learning) │     │   Geometry)      │
-└─────────────┘     └──────────────────┘
+┌──────────────┐    ┌───────────────────┐    ┌──────────────┐
+│   car.py     │    │ traffic_signal.py │    │  utils.py    │
+│ Multi-int'n  │    │ G→Y→R phases      │    │ Constants,   │
+│ stop logic,  │    │ FixedTimer ctrl   │    │ Geometry,    │
+│ car-following│    │ Signal rendering  │    │ Routes       │
+└──────────────┘    └───────────────────┘    └──────────────┘
 ```
+
+### Dual Junction Layout
+
+```
+                 ▲ N                              ▲ N
+                 │                                │
+    ┌────────────┼────────────┐      ┌────────────┼────────────┐
+    │            │            │      │            │            │
+W ──┤  Junction  │     1      ├──────┤  Junction  │     2      ├── E
+◄───┤            │            │      │            │            ├──►
+    │            │            │      │            │            │
+    └────────────┼────────────┘      └────────────┼────────────┘
+                 │                                │
+                 ▼ S                              ▼ S
+```
+
+- **Horizontal road** spans the full 1400px width
+- **Vertical roads** at x=400 and x=1000 (one per junction)
+- **E/W cars** travel the entire width, crossing **both** junctions
+- **N/S cars** are local to their respective junction
 
 ---
 
 ## 🧠 How It Works
 
-### State Representation
-The environment state is a **4-tuple** of discretized waiting-car counts:
-```
-State = (N_waiting, S_waiting, E_waiting, W_waiting)
-```
-Each value is capped at 5, yielding a manageable state space of 6⁴ = 1,296 possible states.
+### Multi-Agent Q-Learning
 
-### Actions
-| Action | Effect |
-|--------|--------|
-| `0` | Give **green** to the North-South corridor |
-| `1` | Give **green** to the East-West corridor |
+Each junction has its own **independent Q-learning agent**:
 
-### Reward Function
+**State** (per junction): `(N_waiting, S_waiting, E_waiting, W_waiting)` — 4-tuple of discretized counts (capped at 5), yielding 6⁴ = 1,296 possible states per agent.
+
+**Actions**: `0` = N/S Green, `1` = E/W Green
+
+**Reward**: `R = −(waiting cars at this junction) − penalty × (signal switched)`
+
+### Persistent Memory
+
 ```
-Reward = −(total waiting cars) − penalty × (signal switched)
+Run 1: Agent learns from scratch → saves Q-table to q_table_junction_0.pkl
+Run 2: Loads Q-table → continues learning from where it left off
+Run 3: Loads again → agent is now well-trained, near-optimal policy
 ```
-- **Negative waiting count** incentivizes the agent to reduce congestion.
-- **Switch penalty** (default: 2) discourages unnecessary signal toggling.
+
+Q-tables and epsilon values are automatically:
+- **Loaded** on startup (if files exist)
+- **Saved** at every episode boundary and on exit
 
 ### Yellow Clearance Phase
-When the agent switches the signal, the system transitions through a **1.5-second yellow phase** (45 frames at 30 FPS). During yellow, **no direction has green**, allowing cars already in the intersection to safely clear before cross-traffic proceeds.
 
-### Learning Algorithm
-Standard **Q-Learning** update:
-```
-Q(s, a) ← Q(s, a) + α × [r + γ × max_a' Q(s', a') − Q(s, a)]
-```
+When an agent switches the signal direction:
+1. Current direction goes **Yellow** (1.5s / 45 frames)
+2. All directions see **Red** — no one gets green
+3. Cars already in the intersection clear safely
+4. New direction goes **Green**
 
-| Hyperparameter | Default | Description |
-|----------------|---------|-------------|
-| α (alpha) | 0.10 | Learning rate |
-| γ (gamma) | 0.95 | Discount factor |
-| ε (epsilon) | 1.0 → 0.05 | Exploration rate with multiplicative decay (0.9995/step) |
+### Car-Following & Multi-Intersection Logic
+
+- Cars are grouped by **lane key** (e.g., `"N0"`, `"E"`, `"W"`)
+- Each car maintains safe following distance to the car directly ahead in its lane
+- **E/W cars** have an ordered list of intersections to cross; they check signals at each one sequentially
+- Once a car's front passes the stop line on green, it **commits** (`inside_current = True`) and won't stop even if the light turns red
 
 ---
 
@@ -147,8 +168,6 @@ source venv/bin/activate        # macOS/Linux
 pip install pygame numpy matplotlib
 ```
 
-> **Note:** Only three external packages are required — `pygame`, `numpy`, and `matplotlib`.
-
 ---
 
 ## 🎮 Usage
@@ -157,8 +176,19 @@ pip install pygame numpy matplotlib
 python3 main.py
 ```
 
-The simulation window (800×800) will open immediately.  
-The RL agent begins training continuously from the first frame.
+The simulation window (1400×800) opens immediately. The RL agents begin training from frame 1 — or resume from saved Q-tables if previous training data exists.
+
+### First Run
+```
+[Junction 1] No saved Q-table — starting fresh
+[Junction 2] No saved Q-table — starting fresh
+```
+
+### Subsequent Runs
+```
+[Junction 1] Loaded Q-table (847 entries, eps=0.0500)
+[Junction 2] Loaded Q-table (912 entries, eps=0.0500)
+```
 
 ---
 
@@ -168,7 +198,7 @@ The RL agent begins training continuously from the first frame.
 |-----|--------|
 | `SPACE` | Toggle between **RL Agent** and **Fixed Timer** modes |
 | `R` | **Reset** the simulation (clears all cars, resets episode) |
-| `ESC` | **Quit** — saves performance comparison chart and displays it |
+| `ESC` | **Quit** — saves Q-tables and shows performance chart |
 
 ---
 
@@ -177,55 +207,65 @@ The RL agent begins training continuously from the first frame.
 ```
 Smart-Traffic-Signal-Optimization-System/
 │
-├── main.py              # Entry point: Pygame loop, road/car rendering, UI overlay
-├── environment.py       # RL environment: state, reward, car spawning, yellow transitions
-├── agent.py             # Q-learning agent: ε-greedy policy, Q-table, training
-├── car.py               # Vehicle class: movement, stop-line logic, car-following, rendering
-├── traffic_signal.py    # Signal management: 4-state phase machine, fixed-timer controller
-├── utils.py             # Constants: colors, geometry, spawn configs, helpers
+├── main.py              # Entry point: Pygame loop, dual-road rendering, UI
+├── environment.py       # RL environment: two junctions, spawning, yellow logic
+├── agent.py             # Q-learning agent with pickle save/load persistence
+├── car.py               # Vehicle: multi-intersection stop logic, car-following
+├── traffic_signal.py    # Signal: 4-state phase machine, fixed-timer controller
+├── utils.py             # Constants, IntersectionConfig, routes, colors
 ├── README.md            # This file
-├── .gitignore           # Python/Pygame ignores
+├── LICENSE              # MIT License
+├── .gitignore           # Python/IDE/output ignores
 └── assets/              # Screenshots & demo media
-    └── demo_screenshot.png
+```
+
+### Generated at Runtime (git-ignored)
+```
+├── q_table_junction_0.pkl     # Persisted Q-table for Junction 1
+├── q_table_junction_1.pkl     # Persisted Q-table for Junction 2
+└── performance_comparison.png # RL vs Fixed chart (on ESC)
 ```
 
 ---
 
 ## ⚙ Configuration
 
-Key simulation parameters can be tuned in `utils.py`:
+### Simulation (`utils.py`)
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `FPS` | 30 | Simulation frame rate |
-| `ROAD_WIDTH` | 120 | Total road width in pixels (2 lanes) |
+| `WIDTH × HEIGHT` | 1400 × 800 | Window size |
+| `FPS` | 30 | Frame rate |
+| `ROAD_WIDTH` | 120 | Road width (2 lanes, 60px each) |
 | `CAR_SPEED` | 3 | Pixels per frame |
-| `SPAWN_PROB` | 0.025 | Per-direction spawn probability per frame |
-| `DECISION_INTERVAL` | 150 | Frames between RL decisions (~5 s) |
-| `MAX_CARS_PER_DIR` | 5 | State discretization cap |
+| `SPAWN_PROB` | 0.02 | Per-route spawn probability per frame |
+| `DECISION_INTERVAL` | 150 | Frames between RL decisions (~5s) |
 | `SWITCH_PENALTY` | 2 | Reward penalty for changing signal phase |
-| `MIN_GAP` | 8 | Minimum bumper-to-bumper gap (pixels) |
 
-Agent hyperparameters can be tuned in `agent.py`:
+### Agent (`agent.py`)
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `alpha` | 0.1 | Learning rate |
 | `gamma` | 0.95 | Discount factor |
-| `epsilon` | 1.0 | Initial exploration rate |
-| `epsilon_min` | 0.05 | Minimum exploration rate |
-| `epsilon_decay` | 0.9995 | Multiplicative decay per decision step |
+| `epsilon` | 1.0 → 0.05 | Exploration rate (decays 0.9995×/step) |
+
+### Junction Positions (`utils.py`)
+
+| Junction | Center | Intersection Box |
+|----------|--------|-----------------|
+| Junction 1 | (400, 400) | [340, 340] – [460, 460] |
+| Junction 2 | (1000, 400) | [940, 340] – [1060, 460] |
 
 ---
 
 ## 📈 Performance Results
 
-Upon pressing **ESC**, the simulation generates a `performance_comparison.png` chart comparing the **average waiting cars per episode** between the RL agent and the fixed-timer baseline.
+Upon pressing **ESC**, the simulation saves Q-tables and generates `performance_comparison.png`:
 
-After sufficient training episodes, the RL agent typically achieves:
-- **20–40% reduction** in average waiting vehicles compared to the fixed timer
-- More adaptive signal timing during asymmetric traffic load scenarios
-- Faster intersection clearance during peak spawns
+- **RL agents** typically achieve **20–40% reduction** in average waiting cars vs fixed timer
+- **Persistent memory** means performance improves across multiple runs
+- **Cross-junction coordination** emerges naturally as E/W traffic patterns stabilize
 
 ---
 
@@ -233,17 +273,16 @@ After sufficient training episodes, the RL agent typically achieves:
 
 | Technology | Purpose |
 |------------|---------|
-| **Python 3** | Core programming language |
-| **Pygame** | Real-time simulation rendering and event handling |
+| **Python 3** | Core language |
+| **Pygame** | Real-time simulation and rendering |
 | **NumPy** | Numerical support |
-| **Matplotlib** | Performance visualization and chart generation |
-| **Q-Learning** | Reinforcement learning algorithm for signal optimization |
+| **Matplotlib** | Performance visualization |
+| **Pickle** | Q-table persistence |
+| **Q-Learning** | Tabular RL for signal optimization |
 
 ---
 
 ## 🤝 Contributing
-
-Contributions are welcome! To contribute:
 
 1. **Fork** the repository
 2. Create a **feature branch** (`git checkout -b feature/amazing-feature`)
@@ -251,11 +290,12 @@ Contributions are welcome! To contribute:
 4. **Push** to the branch (`git push origin feature/amazing-feature`)
 5. Open a **Pull Request**
 
-### Ideas for extension:
+### Ideas for Extension
 - Deep Q-Network (DQN) for continuous state spaces
-- Multi-intersection coordination
+- Three or more connected intersections (corridor)
+- Coordinated "green wave" between junctions
 - Turn lanes and pedestrian crossings
-- Variable speed vehicles and emergency vehicle priority
+- Emergency vehicle priority
 - Real-world traffic data integration
 
 ---

@@ -1,21 +1,20 @@
-"""Main entry point — Pygame loop, premium road rendering, polished UI overlay."""
+"""Main entry point — dual-junction Pygame simulation with persistent RL agents."""
 
 import sys
 import pygame
 import matplotlib
-matplotlib.use("Agg")          # so plt.savefig works headlessly; we show with plt.show after
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 from utils import (
     WIDTH, HEIGHT, FPS,
-    CENTER_X, CENTER_Y, HALF_ROAD, ROAD_WIDTH, LANE_WIDTH,
-    INT_LEFT, INT_RIGHT, INT_TOP, INT_BOTTOM,
-    DECISION_INTERVAL,
+    CENTER_Y, HALF_ROAD, ROAD_WIDTH, LANE_WIDTH,
+    INTERSECTIONS, DECISION_INTERVAL, SWITCH_PENALTY,
     COLOR_BG, COLOR_ROAD, COLOR_ROAD_EDGE, COLOR_LANE_MARK,
     COLOR_CROSSWALK, COLOR_INTERSECTION,
     COLOR_TEXT, COLOR_TEXT_DIM, COLOR_PANEL_BG,
-    COLOR_GREEN, COLOR_RED,
-    NORTH, SOUTH, EAST, WEST, DIRECTION_NAMES,
+    COLOR_GREEN, COLOR_YELLOW,
+    NORTH, SOUTH, EAST, WEST,
 )
 from environment import TrafficEnvironment
 from agent import QLearningAgent
@@ -26,213 +25,173 @@ from traffic_signal import FixedTimerController
 #  Road drawing
 # ═══════════════════════════════════════════════════════════════════════
 
-def draw_roads(surface: pygame.Surface):
-    """Draw roads, lane markings, crosswalks, and intersection."""
+def draw_roads(surface):
+    """Draw horizontal road, two vertical roads, intersections, and markings."""
 
-    # ── road surfaces ────────────────────────────────────────────────
-    # Vertical road
-    v_road = pygame.Rect(CENTER_X - HALF_ROAD, 0, ROAD_WIDTH, HEIGHT)
-    pygame.draw.rect(surface, COLOR_ROAD, v_road)
-    # Horizontal road
-    h_road = pygame.Rect(0, CENTER_Y - HALF_ROAD, WIDTH, ROAD_WIDTH)
-    pygame.draw.rect(surface, COLOR_ROAD, h_road)
+    # Horizontal road (full width)
+    pygame.draw.rect(surface, COLOR_ROAD,
+                     pygame.Rect(0, CENTER_Y - HALF_ROAD, WIDTH, ROAD_WIDTH))
 
-    # ── intersection fill ────────────────────────────────────────────
-    inter = pygame.Rect(INT_LEFT, INT_TOP, ROAD_WIDTH, ROAD_WIDTH)
-    pygame.draw.rect(surface, COLOR_INTERSECTION, inter)
+    # Vertical roads
+    for inter in INTERSECTIONS:
+        pygame.draw.rect(surface, COLOR_ROAD,
+                         pygame.Rect(inter.left, 0, ROAD_WIDTH, HEIGHT))
 
-    # ── road edges ───────────────────────────────────────────────────
-    for offset in (-HALF_ROAD, HALF_ROAD):
-        # Vertical edges (skip intersection)
-        for seg in [(0, INT_TOP), (INT_BOTTOM, HEIGHT)]:
+    # Intersection fills
+    for inter in INTERSECTIONS:
+        pygame.draw.rect(surface, COLOR_INTERSECTION,
+                         pygame.Rect(inter.left, inter.top, ROAD_WIDTH, ROAD_WIDTH))
+
+    # Vertical road edges (skip intersection zone)
+    for inter in INTERSECTIONS:
+        for x_off in (inter.left, inter.right):
+            for y0, y1 in [(0, inter.top), (inter.bottom, HEIGHT)]:
+                pygame.draw.line(surface, COLOR_ROAD_EDGE,
+                                 (x_off, y0), (x_off, y1), 2)
+
+    # Horizontal road edges (skip intersection zones)
+    for y_off in (CENTER_Y - HALF_ROAD, CENTER_Y + HALF_ROAD):
+        segs = [(0, INTERSECTIONS[0].left)]
+        for i in range(len(INTERSECTIONS) - 1):
+            segs.append((INTERSECTIONS[i].right, INTERSECTIONS[i + 1].left))
+        segs.append((INTERSECTIONS[-1].right, WIDTH))
+        for x0, x1 in segs:
             pygame.draw.line(surface, COLOR_ROAD_EDGE,
-                             (CENTER_X + offset, seg[0]),
-                             (CENTER_X + offset, seg[1]), 2)
-        # Horizontal edges
-        for seg in [(0, INT_LEFT), (INT_RIGHT, WIDTH)]:
-            pygame.draw.line(surface, COLOR_ROAD_EDGE,
-                             (seg[0], CENTER_Y + offset),
-                             (seg[1], CENTER_Y + offset), 2)
+                             (x0, y_off), (x1, y_off), 2)
 
-    # ── dashed centre lines ──────────────────────────────────────────
+    # Dashed centre lines — vertical roads
     dash, gap = 18, 14
-    # Vertical
-    y = 0
-    while y < HEIGHT:
-        if not (INT_TOP - 5 <= y <= INT_BOTTOM + 5):
-            ye = min(y + dash, HEIGHT)
-            pygame.draw.line(surface, COLOR_LANE_MARK,
-                             (CENTER_X, y), (CENTER_X, ye), 2)
-        y += dash + gap
-    # Horizontal
+    for inter in INTERSECTIONS:
+        y = 0
+        while y < HEIGHT:
+            if not (inter.top - 5 <= y <= inter.bottom + 5):
+                pygame.draw.line(surface, COLOR_LANE_MARK,
+                                 (inter.cx, y), (inter.cx, min(y + dash, HEIGHT)), 2)
+            y += dash + gap
+
+    # Dashed centre line — horizontal road
     x = 0
     while x < WIDTH:
-        if not (INT_LEFT - 5 <= x <= INT_RIGHT + 5):
-            xe = min(x + dash, WIDTH)
+        skip = False
+        for inter in INTERSECTIONS:
+            if inter.left - 5 <= x <= inter.right + 5:
+                skip = True
+                break
+        if not skip:
             pygame.draw.line(surface, COLOR_LANE_MARK,
-                             (x, CENTER_Y), (xe, CENTER_Y), 2)
+                             (x, CENTER_Y), (min(x + dash, WIDTH), CENTER_Y), 2)
         x += dash + gap
 
-    # ── crosswalks ───────────────────────────────────────────────────
-    cw_width = 6
-    cw_gap = 6
-    cw_inset = 8     # distance inside the intersection edge
+    # Crosswalks
+    cw_w, cw_gap = 6, 6
+    for inter in INTERSECTIONS:
+        for cy in (inter.top + 8, inter.bottom - 11):
+            xs = inter.left + 4
+            while xs < inter.right - 4:
+                pygame.draw.rect(surface, COLOR_CROSSWALK, (xs, cy, cw_w, 3))
+                xs += cw_w + cw_gap
+        for cx in (inter.left + 8, inter.right - 11):
+            ys = inter.top + 4
+            while ys < inter.bottom - 4:
+                pygame.draw.rect(surface, COLOR_CROSSWALK, (cx, ys, 3, cw_w))
+                ys += cw_w + cw_gap
 
-    # Top crosswalk (horizontal stripes at top of intersection)
-    cy = INT_TOP + cw_inset
-    x_start = INT_LEFT + 4
-    while x_start < INT_RIGHT - 4:
-        pygame.draw.rect(surface, COLOR_CROSSWALK,
-                         (x_start, cy, cw_width, 3))
-        x_start += cw_width + cw_gap
-
-    # Bottom crosswalk
-    cy = INT_BOTTOM - cw_inset - 3
-    x_start = INT_LEFT + 4
-    while x_start < INT_RIGHT - 4:
-        pygame.draw.rect(surface, COLOR_CROSSWALK,
-                         (x_start, cy, cw_width, 3))
-        x_start += cw_width + cw_gap
-
-    # Left crosswalk (vertical stripes)
-    cx = INT_LEFT + cw_inset
-    y_start = INT_TOP + 4
-    while y_start < INT_BOTTOM - 4:
-        pygame.draw.rect(surface, COLOR_CROSSWALK,
-                         (cx, y_start, 3, cw_width))
-        y_start += cw_width + cw_gap
-
-    # Right crosswalk
-    cx = INT_RIGHT - cw_inset - 3
-    y_start = INT_TOP + 4
-    while y_start < INT_BOTTOM - 4:
-        pygame.draw.rect(surface, COLOR_CROSSWALK,
-                         (cx, y_start, 3, cw_width))
-        y_start += cw_width + cw_gap
-
-    # ── direction labels ─────────────────────────────────────────────
-    label_font = pygame.font.SysFont("arial", 13, bold=True)
-    labels = {
-        "N ▲": (CENTER_X + HALF_ROAD + 15, CENTER_Y + HALF_ROAD + 15),
-        "S ▼": (CENTER_X - HALF_ROAD - 25, CENTER_Y - HALF_ROAD - 22),
-        "E ►": (INT_RIGHT + 15, CENTER_Y + HALF_ROAD + 15),
-        "W ◄": (INT_LEFT - 35, CENTER_Y - HALF_ROAD - 22),
-    }
-    for text, pos in labels.items():
-        surf = label_font.render(text, True, COLOR_TEXT_DIM)
-        surface.blit(surf, pos)
+    # Junction labels
+    lbl_font = pygame.font.SysFont("arial", 14, bold=True)
+    for i, inter in enumerate(INTERSECTIONS):
+        lbl = lbl_font.render(f"Junction {i + 1}", True, COLOR_TEXT_DIM)
+        surface.blit(lbl, (inter.cx - lbl.get_width() // 2, inter.top - 24))
 
 
 # ═══════════════════════════════════════════════════════════════════════
 #  UI overlay
 # ═══════════════════════════════════════════════════════════════════════
 
-def draw_ui(surface: pygame.Surface, font: pygame.font.Font,
-            small_font: pygame.font.Font,
-            mode: str, env: TrafficEnvironment,
-            epsilon: float, episode: int, q_size: int):
-    """Render the info panel and per-direction counters."""
+def draw_ui(surface, font, small_font, mode, env, agents, episode):
+    """Info panel, per-junction badges, and controls hint."""
 
-    phase = env.signal.get_phase()
     waiting = env.waiting_count()
     avg_wait = env.average_wait()
 
     # ── main panel (top-left) ────────────────────────────────────────
-    panel_w, panel_h = 270, 235
+    panel_w, panel_h = 280, 210
     panel = pygame.Surface((panel_w, panel_h), pygame.SRCALPHA)
     panel.fill((*COLOR_PANEL_BG, 220))
-    # border
     pygame.draw.rect(panel, (60, 65, 80), (0, 0, panel_w, panel_h),
                      width=1, border_radius=10)
     surface.blit(panel, (12, 12))
 
-    # Title bar
-    mode_label = "🤖  RL Agent" if mode == "rl" else "⏱  Fixed Timer"
-    mode_color = COLOR_GREEN if mode == "rl" else (250, 200, 50)
+    mode_label = "RL Agent" if mode == "rl" else "Fixed Timer"
+    mode_color = COLOR_GREEN if mode == "rl" else COLOR_YELLOW
     title = font.render(mode_label, True, mode_color)
     surface.blit(title, (24, 20))
-    pygame.draw.line(surface, (60, 65, 80), (22, 46), (270, 46), 1)
+    pygame.draw.line(surface, (60, 65, 80), (22, 44), (280, 44), 1)
 
-    state = env.signal.get_state()
-    if state == 0:
-        sig_str, sig_col = "↕ N/S Green", COLOR_GREEN
-    elif state == 1:
-        sig_str, sig_col = "↕ N/S Yellow", (250, 200, 50)
-    elif state == 2:
-        sig_str, sig_col = "↔ E/W Green", COLOR_GREEN
-    else:
-        sig_str, sig_col = "↔ E/W Yellow", (250, 200, 50)
-
-    # Stats
     lines = [
-        (f"Signal:  {sig_str}", sig_col),
         (f"Total Waiting:  {waiting}", COLOR_TEXT),
         (f"Avg Wait:  {avg_wait:.1f}s", COLOR_TEXT),
+        (f"Cars on Road:  {len(env.cars)}", COLOR_TEXT),
         (f"Cars Served:  {env.total_cars_served}", COLOR_TEXT),
         (f"Episode:  {episode}", COLOR_TEXT),
     ]
     if mode == "rl":
-        lines.append((f"Epsilon:  {epsilon:.4f}", COLOR_TEXT_DIM))
-        lines.append((f"Q-table:  {q_size} states", COLOR_TEXT_DIM))
+        a0 = agents[0]
+        lines.append((f"Epsilon:  {a0.epsilon:.4f}", COLOR_TEXT_DIM))
+        total_q = sum(a.q_table_size() for a in agents)
+        lines.append((f"Q-entries:  {total_q}", COLOR_TEXT_DIM))
+        lines.append((f"Memory:  Persistent", (80, 200, 120)))
 
-    y = 54
+    y = 50
     for text, color in lines:
         surf = small_font.render(text, True, color)
         surface.blit(surf, (24, y))
-        y += 24
+        y += 20
 
-    # ── per-direction lane counters ──────────────────────────────────
-    badge_font = pygame.font.SysFont("arial", 12, bold=True)
-    label_font = pygame.font.SysFont("arial", 11)
-    greens = env.signal.green_directions()
-    per_dir_total   = env.cars_per_direction()
-    per_dir_waiting = env.waiting_per_direction()
+    # ── per-junction info boxes ──────────────────────────────────────
+    lbl_font = pygame.font.SysFont("arial", 12, bold=True)
+    sub_font = pygame.font.SysFont("arial", 11)
 
-    # Badge is placed on the road APPROACHING the intersection:
-    #   NORTH cars come from bottom → badge above intersection on right lane
-    #   SOUTH cars come from top   → badge below intersection on left lane
-    #   EAST  cars come from left  → badge right of intersection on bottom lane
-    #   WEST  cars come from right → badge left of intersection on top lane
-    badge_cfg = {
-        NORTH: (CENTER_X + LANE_WIDTH // 2, INT_TOP - 60, "N"),
-        SOUTH: (CENTER_X - LANE_WIDTH // 2, INT_BOTTOM + 30, "S"),
-        EAST:  (INT_RIGHT + 22, CENTER_Y + LANE_WIDTH // 2, "E"),
-        WEST:  (INT_LEFT - 62, CENTER_Y - LANE_WIDTH // 2, "W"),
-    }
+    for inter in INTERSECTIONS:
+        sig = env.signals[inter.idx]
+        st = sig.get_state()
+        if st == 0:
+            sig_str, sig_col = "N/S Green", COLOR_GREEN
+        elif st == 1:
+            sig_str, sig_col = "N/S Yellow", COLOR_YELLOW
+        elif st == 2:
+            sig_str, sig_col = "E/W Green", COLOR_GREEN
+        else:
+            sig_str, sig_col = "E/W Yellow", COLOR_YELLOW
 
-    for d, (bx, by, dlabel) in badge_cfg.items():
-        total   = per_dir_total[d]
-        waiting = per_dir_waiting[d]
-        is_green = d in greens
+        w_count = env.waiting_at(inter.idx)
+        t_count = env.cars_at(inter.idx)
 
-        # Outer badge box  (width=60, height=40)
-        badge_w, badge_h = 60, 42
-        badge_surf = pygame.Surface((badge_w, badge_h), pygame.SRCALPHA)
-        bg = (30, 110, 55, 210) if is_green else (130, 35, 30, 210)
-        pygame.draw.rect(badge_surf, bg, (0, 0, badge_w, badge_h), border_radius=8)
-        pygame.draw.rect(badge_surf, (255, 255, 255, 60),
-                         (0, 0, badge_w, badge_h), width=1, border_radius=8)
+        box_w, box_h = 120, 58
+        bx = inter.cx - box_w // 2
+        by = inter.bottom + 70
 
-        # Direction label top-left
-        lbl = label_font.render(dlabel, True, (255, 255, 255, 180))
-        badge_surf.blit(lbl, (5, 3))
+        box = pygame.Surface((box_w, box_h), pygame.SRCALPHA)
+        box.fill((*COLOR_PANEL_BG, 210))
+        pygame.draw.rect(box, (60, 65, 80), (0, 0, box_w, box_h),
+                         width=1, border_radius=8)
 
-        # Big count in center
-        count_txt = badge_font.render(str(total), True, (255, 255, 255))
-        badge_surf.blit(count_txt, (badge_w // 2 - count_txt.get_width() // 2, 8))
+        t1 = lbl_font.render(f"J{inter.idx + 1}: {sig_str}", True, sig_col)
+        box.blit(t1, (box_w // 2 - t1.get_width() // 2, 4))
 
-        # "W:X" waiting sub-label
-        wait_txt = label_font.render(f"wait:{waiting}", True, (220, 220, 180))
-        badge_surf.blit(wait_txt, (badge_w // 2 - wait_txt.get_width() // 2, 27))
+        t2 = sub_font.render(f"Cars: {t_count}  Wait: {w_count}", True, COLOR_TEXT)
+        box.blit(t2, (box_w // 2 - t2.get_width() // 2, 22))
 
-        surface.blit(badge_surf, (bx - badge_w // 2, by))
+        if mode == "rl":
+            agent = agents[inter.idx]
+            t3 = sub_font.render(f"Q: {agent.q_table_size()} entries", True, COLOR_TEXT_DIM)
+            box.blit(t3, (box_w // 2 - t3.get_width() // 2, 38))
 
+        surface.blit(box, (bx, by))
 
-    # ── controls hint (bottom centre) ────────────────────────────────
+    # ── controls hint ────────────────────────────────────────────────
     hint_font = pygame.font.SysFont("consolas", 13)
-    hints = "SPACE: Toggle Mode    R: Reset    ESC: Quit"
+    hints = "SPACE: Toggle Mode    R: Reset    ESC: Quit & Save"
     ht = hint_font.render(hints, True, COLOR_TEXT_DIM)
-    # Background bar
     bar = pygame.Surface((ht.get_width() + 30, 26), pygame.SRCALPHA)
     bar.fill((*COLOR_PANEL_BG, 180))
     surface.blit(bar, (WIDTH // 2 - bar.get_width() // 2, HEIGHT - 34))
@@ -243,10 +202,9 @@ def draw_ui(surface: pygame.Surface, font: pygame.font.Font,
 #  Metrics plotting
 # ═══════════════════════════════════════════════════════════════════════
 
-def plot_metrics(rl_history: list, fixed_history: list):
-    """Show a matplotlib graph comparing RL vs Fixed average waiting cars."""
-    matplotlib.use("TkAgg")    # switch back for interactive display
-    fig, ax = plt.subplots(figsize=(10, 5))
+def plot_metrics(rl_history, fixed_history):
+    matplotlib.use("TkAgg")
+    fig, ax = plt.subplots(figsize=(12, 5))
     fig.patch.set_facecolor("#1a1b23")
     ax.set_facecolor("#22232b")
 
@@ -258,7 +216,7 @@ def plot_metrics(rl_history: list, fixed_history: list):
 
     ax.set_xlabel("Episode", color="white", fontsize=12)
     ax.set_ylabel("Avg Waiting Cars", color="white", fontsize=12)
-    ax.set_title("RL vs Fixed Timer — Performance Comparison",
+    ax.set_title("RL vs Fixed Timer — Dual Junction Performance",
                  color="white", fontsize=14, pad=15)
     ax.legend(fontsize=11, facecolor="#2d2e3a", edgecolor="#444",
               labelcolor="white")
@@ -279,14 +237,26 @@ def plot_metrics(rl_history: list, fixed_history: list):
 def main():
     pygame.init()
     screen = pygame.display.set_mode((WIDTH, HEIGHT))
-    pygame.display.set_caption("🚦 RL Traffic Signal Optimization")
+    pygame.display.set_caption("RL Traffic Signal Optimization — Dual Junction")
     clock = pygame.time.Clock()
     font = pygame.font.SysFont("arial", 17, bold=True)
-    small_font = pygame.font.SysFont("arial", 15)
+    small_font = pygame.font.SysFont("arial", 14)
 
     env = TrafficEnvironment()
-    agent = QLearningAgent()
-    fixed_ctrl = FixedTimerController()
+
+    # One persistent agent per intersection
+    agents = []
+    for inter in INTERSECTIONS:
+        agent = QLearningAgent(save_name=f"q_table_junction_{inter.idx}")
+        loaded = agent.load()
+        if loaded:
+            print(f"[Junction {inter.idx + 1}] Loaded Q-table "
+                  f"({agent.q_table_size()} entries, eps={agent.epsilon:.4f})")
+        else:
+            print(f"[Junction {inter.idx + 1}] No saved Q-table — starting fresh")
+        agents.append(agent)
+
+    fixed_ctrls = [FixedTimerController() for _ in INTERSECTIONS]
 
     mode = "rl"
     frame_counter = 0
@@ -297,10 +267,15 @@ def main():
     rl_episode_history: list[float] = []
     fixed_episode_history: list[float] = []
 
-    prev_state = env.get_state()
-    prev_action = agent.choose_action(prev_state)
+    prev_states = {
+        inter.idx: env.get_state(inter.idx) for inter in INTERSECTIONS
+    }
+    prev_actions = {
+        inter.idx: agents[inter.idx].choose_action(prev_states[inter.idx])
+        for inter in INTERSECTIONS
+    }
 
-    EPISODE_LENGTH = DECISION_INTERVAL * 20   # ~100 s per episode
+    EPISODE_LENGTH = DECISION_INTERVAL * 20
 
     running = True
     while running:
@@ -313,7 +288,8 @@ def main():
                     running = False
                 elif event.key == pygame.K_SPACE:
                     mode = "fixed" if mode == "rl" else "rl"
-                    fixed_ctrl.reset()
+                    for ctrl in fixed_ctrls:
+                        ctrl.reset()
                 elif event.key == pygame.K_r:
                     env.reset()
                     frame_counter = 0
@@ -323,21 +299,41 @@ def main():
         # ── spawn ────────────────────────────────────────────────────
         env.spawn_cars()
 
-        # ── decision step ────────────────────────────────────────────
+        # ── decision / tick ──────────────────────────────────────────
         if mode == "rl":
             if frame_counter % DECISION_INTERVAL == 0:
-                state_rep = env.get_state()
-                action = agent.choose_action(state_rep)
-                reward = env.step(action)
-                next_state_rep = env.get_state()
-                agent.update(prev_state, prev_action, reward, next_state_rep)
-                agent.decay_epsilon()
-                prev_state = state_rep
-                prev_action = action
+                # 1) All agents pick actions and set signals
+                cur_states = {}
+                cur_actions = {}
+                for inter in INTERSECTIONS:
+                    idx = inter.idx
+                    state = env.get_state(idx)
+                    action = agents[idx].choose_action(state)
+                    env.step(idx, action)
+                    cur_states[idx] = state
+                    cur_actions[idx] = action
+
+                # 2) Tick cars once
+                env.tick_cars()
+
+                # 3) Observe next state, compute reward, update Q-tables
+                for inter in INTERSECTIONS:
+                    idx = inter.idx
+                    next_state = env.get_state(idx)
+                    reward = -env.waiting_at(idx)
+                    if cur_actions[idx] != prev_actions[idx]:
+                        reward -= SWITCH_PENALTY
+                    agents[idx].update(
+                        prev_states[idx], prev_actions[idx], reward, next_state
+                    )
+                    agents[idx].decay_epsilon()
+                    prev_states[idx] = cur_states[idx]
+                    prev_actions[idx] = cur_actions[idx]
             else:
                 env.tick_cars()
         else:
-            fixed_ctrl.tick(env.signal)
+            for i, inter in enumerate(INTERSECTIONS):
+                fixed_ctrls[i].tick(env.signals[inter.idx])
             env.tick_cars()
 
         # ── episode tracking ─────────────────────────────────────────
@@ -355,25 +351,40 @@ def main():
             episode_frames = 0
             episode_wait_sum = 0
             env.reset()
-            prev_state = env.get_state()
-            prev_action = agent.choose_action(prev_state)
-            fixed_ctrl.reset()
+            prev_states = {
+                inter.idx: env.get_state(inter.idx) for inter in INTERSECTIONS
+            }
+            prev_actions = {
+                inter.idx: agents[inter.idx].choose_action(prev_states[inter.idx])
+                for inter in INTERSECTIONS
+            }
+            for ctrl in fixed_ctrls:
+                ctrl.reset()
+
+            # Save Q-tables at each episode end
+            if mode == "rl":
+                for agent in agents:
+                    agent.save()
 
         frame_counter += 1
 
         # ── draw ─────────────────────────────────────────────────────
         screen.fill(COLOR_BG)
         draw_roads(screen)
-        env.signal.draw(screen)
+        for inter in INTERSECTIONS:
+            env.signals[inter.idx].draw(screen, inter.cx, inter.cy)
         for car in env.cars:
             car.draw(screen)
-        draw_ui(screen, font, small_font, mode, env,
-                agent.epsilon, episode, agent.q_table_size())
+        draw_ui(screen, font, small_font, mode, env, agents, episode)
 
         pygame.display.flip()
         clock.tick(FPS)
 
-    # ── on exit: show plot ───────────────────────────────────────────
+    # ── on exit: save Q-tables and show plot ─────────────────────────
+    for agent in agents:
+        agent.save()
+    print("Q-tables saved to disk.")
+
     pygame.quit()
     if rl_episode_history or fixed_episode_history:
         plot_metrics(rl_episode_history, fixed_episode_history)
